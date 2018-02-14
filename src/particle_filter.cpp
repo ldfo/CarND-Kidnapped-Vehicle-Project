@@ -37,11 +37,25 @@ void ParticleFilter::init(double x, double y, double theta, double std[]) {
 }
 
 void ParticleFilter::prediction(double delta_t, double std_pos[], double velocity, double yaw_rate) {
-	// TODO: Add measurements to each particle and add random Gaussian noise.
-	// NOTE: When adding noise you may find std::normal_distribution and std::default_random_engine useful.
-	//  http://en.cppreference.com/w/cpp/numeric/random/normal_distribution
-	//  http://www.cplusplus.com/reference/random/default_random_engine/
+	// predict state using time, gps uncertainty, vect1 and vect2
+	// using the CTRV model
 
+	for (int i=0; i< num_particles; i++){
+	// if yaw rate is 0
+		if (fabs(yaw_rate) < 0.001) {
+			particles[i].x += velocity * cos(particles[i].theta) * delta_t;
+			particles[i].y += velocity * sin(particles[i].theta) * delta_t;
+		}
+		else {
+			particles[i].x += velocity / yaw_rate * (sin(particles[i].theta + yaw_rate * delta_t)
+													 - sin(particles[i].theta));
+
+			particles[i].y += velocity / yaw_rate * (-cos(particles[i].theta + yaw_rate * delta_t)
+													 + cos(particles[i].theta));
+		}
+	}
+
+	particles[i].theta = particles[i].theta + (yaw_rate * delta_t);
 }
 
 void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::vector<LandmarkObs>& observations) {
