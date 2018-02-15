@@ -19,9 +19,20 @@
 
 using namespace std;
 
+static void get_pred_landmarks(std::vector<LandmarkObs> &pred_landmarks, const Map &map_landmarks);
+
+static void to_map_coordinates(std::vector<LandmarkObs> &meas_landmarks,
+        const std::vector<LandmarkObs> &observations,
+        Particle particle);
+
+static double calc_weight(const std::vector<LandmarkObs> &pred_landmarks,
+        const std::vector<LandmarkObs> &meas_landmarks,
+        double std_x,
+        double std_y);
+
 void ParticleFilter::init(double x, double y, double theta, double std[]) {
     // initialize ParticleFilter
-    num_particles = 40;
+    num_particles = 50;
     particles.resize(num_particles);
     weights.resize(num_particles);
 
@@ -39,21 +50,29 @@ void ParticleFilter::init(double x, double y, double theta, double std[]) {
 void ParticleFilter::prediction(double delta_t, double std_pos[], double velocity, double yaw_rate) {
     // using the CTRV model
     // predict state using time, gps uncertainty, vect1 and vect2
-
-    for (int i=0; i< num_particles; i++){
-    // if yaw rate is 0
+    // 1. Process next state according to CTRV-model
+    for (int i = 0; i < num_particles; i++) {
+        // in case of yaw_rate == 0
         if (fabs(yaw_rate) < 0.001) {
             particles[i].x += velocity * cos(particles[i].theta) * delta_t;
             particles[i].y += velocity * sin(particles[i].theta) * delta_t;
         }
+        // in case of yaw_rate != 0
         else {
-            particles[i].x += velocity / yaw_rate * (sin(particles[i].theta + yaw_rate * delta_t)
-                                                     - sin(particles[i].theta));
-
-            particles[i].y += velocity / yaw_rate * (-cos(particles[i].theta + yaw_rate * delta_t)
-                                                     + cos(particles[i].theta));
+            particles[i].x += velocity / yaw_rate * (sin(particles[i].theta + yaw_rate * delta_t) - sin(particles[i].theta));
+            particles[i].y += velocity / yaw_rate * (-cos(particles[i].theta + yaw_rate * delta_t) + cos(particles[i].theta));
         }
-        particles[i].theta = particles[i].theta + (yaw_rate * delta_t);
+        particles[i].theta = particles[i].theta + yaw_rate * delta_t;
+    }
+    // 2. Add gaussian noise
+    normal_distribution<double> dist_x(0, std_pos[0]), dist_y(0, std_pos[1]), dist_theta(0, std_pos[2]);
+    
+    default_random_engine gen;
+
+    for (int i = 0; i < num_particles; i++) {
+        particles[i].x += dist_x(gen);
+        particles[i].y += dist_y(gen);
+        particles[i].theta += dist_theta(gen);
     }
 }
 
@@ -64,7 +83,7 @@ void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::ve
     //   implement this method and use it as a helper during the updateWeights phase.
     for (int i = 0; i < observations.size(); i++)
     {
-        double min_dist = 50000;
+        double min_dist = 40000;
         int min_index = -1;
         for (int j = 0; j < predicted.size(); j++)
         {
@@ -79,10 +98,7 @@ void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::ve
             }
         }
 
-        if (min_index != -1)
             observations[i].id = predicted[min_index].id;
-        else
-            cout << "\n dataAssociation Error!!!";
     }
 
 }
@@ -101,18 +117,16 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
     //   http://planning.cs.uiuc.edu/node99.html
     // get predicted landmarks
     std::vector<LandmarkObs> pred_landmarks(num_particles);
-    _get_pred_landmarks(pred_landmarks, map_landmarks);
+    get_pred_landmarks(pred_landmarks, map_landmarks);
     for (int i = 0; i < num_particles; i++)
     {
-        // 1. change coords
+        // change coords
         std::vector<LandmarkObs> meas_landmarks(observations.size());
-        _to_map_coord(meas_landmarks, observations, particles[i]);
-
-        // 2. nearest landmarks
+        to_map_coordinates(meas_landmarks, observations, particles[i]);
+        // nearest landmarks
         dataAssociation(pred_landmarks, meas_landmarks);
-
-        // 3. update weights
-        particles[i].weight = _calc_weight(pred_landmarks, meas_landmarks, std_landmark[0], std_landmark[1]);
+        // update weights
+        particles[i].weight = calc_weight(pred_landmarks, meas_landmarks, std_landmark[0], std_landmark[1]);
         weights[i] = particles[i].weight;
     }
 }
@@ -128,8 +142,9 @@ void ParticleFilter::resample() {
         weights[i] = particles[i].weight;
     }
 
+
     discrete_distribution<int> index(weights.begin(), weights.end());
-    for (unsigned j=0; j<num_particles;j++){
+    for (int j=0; j<num_particles;j++){
         int i = index(gen);
         resampled_particles[j] = particles[i];
     }
@@ -139,11 +154,7 @@ void ParticleFilter::resample() {
 Particle ParticleFilter::SetAssociations(Particle& particle, const std::vector<int>& associations, 
                                      const std::vector<double>& sense_x, const std::vector<double>& sense_y)
 {
-    //particle: the particle to assign each listed association, and association's (x,y) world coordinates mapping to
-    // associations: The landmark id that goes along with each listed association
-    // sense_x: the associations x mapping already converted to world coordinates
-    // sense_y: the associations y mapping already converted to world coordinates
-
+    // particle associations
     particle.associations= associations;
     particle.sense_x = sense_x;
     particle.sense_y = sense_y;
@@ -151,28 +162,117 @@ Particle ParticleFilter::SetAssociations(Particle& particle, const std::vector<i
 
 string ParticleFilter::getAssociations(Particle best)
 {
-    vector<int> v = best.associations;
+    vector<int> vect;
+    vect = best.associations;
     stringstream ss;
-    copy( v.begin(), v.end(), ostream_iterator<int>(ss, " "));
+    copy( vect.begin(), vect.end(), ostream_iterator<int>(ss, " "));
     string s = ss.str();
     s = s.substr(0, s.length()-1);  // get rid of the trailing space
     return s;
 }
+
 string ParticleFilter::getSenseX(Particle best)
 {
-    vector<double> v = best.sense_x;
+    vector<double> vect;
+    vect = best.sense_x;
     stringstream ss;
-    copy( v.begin(), v.end(), ostream_iterator<float>(ss, " "));
+    copy( vect.begin(), vect.end(), ostream_iterator<float>(ss, " "));
     string s = ss.str();
     s = s.substr(0, s.length()-1);  // get rid of the trailing space
     return s;
 }
 string ParticleFilter::getSenseY(Particle best)
 {
-    vector<double> v = best.sense_y;
+    vector<double> vect;
+    vect = best.sense_y;
     stringstream ss;
-    copy( v.begin(), v.end(), ostream_iterator<float>(ss, " "));
+    copy( vect.begin(), vect.end(), ostream_iterator<float>(ss, " "));
     string s = ss.str();
     s = s.substr(0, s.length()-1);  // get rid of the trailing space
     return s;
+}
+
+
+static void get_pred_landmarks(std::vector<LandmarkObs> &pred_landmarks, const Map &map_landmarks)
+{
+     // Get pred_landmarks
+    for (int i = 0; i < map_landmarks.landmark_list.size(); i++){
+        LandmarkObs obs;
+        // id
+        obs.id = map_landmarks.landmark_list[i].id_i;
+        // x
+        obs.x = map_landmarks.landmark_list[i].x_f;
+        // y
+        obs.y = map_landmarks.landmark_list[i].y_f;
+        pred_landmarks[i] = obs;
+    }
+}
+
+static void to_map_coordinates(std::vector<LandmarkObs> &meas_landmarks,
+        const std::vector<LandmarkObs> &observations, Particle particle){
+     // sensor input from particle to map coordinates
+    double xp;
+    double yp;
+    double theta_p;
+    double xc;
+    double yc;
+    double xm;
+    double ym;
+
+    xp = particle.x;
+    yp = particle.y;
+    theta_p = particle.theta;
+
+    for (int i = 0; i < observations.size(); i++)
+    {
+        xc = observations[i].x;
+        yc = observations[i].y;
+
+        xm = xp + cos(theta_p)*xc - sin(theta_p)*yc;
+        ym = yp + sin(theta_p)*xc + cos(theta_p)*yc;
+
+        LandmarkObs obs;
+        obs.x = xm;
+        obs.y = ym;
+
+        obs.id = observations[i].id;
+        meas_landmarks[i] = obs;
+    }
+}
+
+static double calc_weight(const std::vector<LandmarkObs> &pred_landmarks,
+        const std::vector<LandmarkObs> &meas_landmarks, double std_x, double std_y){
+    // calculate weight
+    double weight;
+    double na;
+    double nb;
+    double gauss_norm;
+    double pr_x, pr_y;
+    double o_x;
+    double o_y;
+    double obs_w;
+
+    weight = 1.0;
+    // tried with several coeffs 2.5 gave the best result for me
+    na = 2.5 * std_x * std_x;
+    nb = 2.5 * std_y * std_y;
+    gauss_norm = 2.5 * M_PI * std_x * std_y;
+
+    for (int i=0; i < meas_landmarks.size(); i++){
+        o_x = meas_landmarks[i].x;
+        o_y = meas_landmarks[i].y;
+
+        for (int i2 = 0; i2 < pred_landmarks.size(); i2++) {
+
+            if (pred_landmarks[i2].id == meas_landmarks[i].id) {
+                pr_x = pred_landmarks[i2].x;
+                pr_y = pred_landmarks[i2].y;
+                break;
+            }
+        }
+        obs_w =  pow(pr_x-o_x,2)/na + (pow(pr_y-o_y,2)/nb);
+        obs_w = 1/gauss_norm * exp( -obs_w );
+        weight *= obs_w;
+    }
+    return weight;
 }
